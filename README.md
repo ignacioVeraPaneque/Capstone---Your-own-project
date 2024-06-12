@@ -1,0 +1,1 @@
+Please note that placing all files (including the Rmd and all data files) in a single folder on your local machine should ensure the project runs without issues. All files are available here. Thank you.
