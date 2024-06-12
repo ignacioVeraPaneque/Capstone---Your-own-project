@@ -1,0 +1,216 @@
+StateAbb,CCode,StateNme,ISO3_code
+AFG,700,Afghanistan,AFG
+ALB,339,Albania,ALB
+ALG,615,Algeria,DZA
+AND,232,Andorra,AND
+ANG,540,Angola,AGO
+AAB,58,Antigua and Barbuda,ATG
+ARG,160,Argentina,ARG
+ARM,371,Armenia,ARM
+AUL,900,Australia,AUS
+AUS,305,Austria,AUT
+AUH,300,Austria-Hungary,#N/A
+AZE,373,Azerbaijan,AZE
+BAD,267,Baden,#N/A
+BHM,31,Bahamas,BHS
+BAH,692,Bahrain,BHR
+BNG,771,Bangladesh,BGD
+BAR,53,Barbados,BRB
+BAV,245,Bavaria,#N/A
+BLR,370,Belarus,BLR
+BEL,211,Belgium,BEL
+BLZ,80,Belize,BLZ
+BEN,434,Benin,BEN
+BHU,760,Bhutan,BTN
+BOL,145,Bolivia,BOL
+BOS,346,Bosnia and Herzegovina,BIH
+BOT,571,Botswana,BWA
+BRA,140,Brazil,BRA
+BRU,835,Brunei,BRN
+BUL,355,Bulgaria,BGR
+BFO,439,Burkina Faso,BFA
+BUI,516,Burundi,BDI
+CAP,402,Cabo Verde,CPV
+CAM,811,Cambodia,KHM
+CAO,471,Cameroon,CMR
+CAN,20,Canada,CAN
+CEN,482,Central African Republic,CAF
+CHA,483,Chad,TCD
+CHL,155,Chile,CHL
+CHN,710,China,CHN
+COL,100,Colombia,COL
+COM,581,Comoros,COM
+CON,484,Congo,COG
+COS,94,Costa Rica,CRI
+CDI,437,Cote d'Ivoire,CIV
+CRO,344,Croatia,HRV
+CUB,40,Cuba,CUB
+CYP,352,Cyprus,CYP
+CZR,316,Czech Republic,#N/A
+CZE,315,Czechoslovakia,#N/A
+DRC,490,Democratic Republic of the Congo,COD
+DEN,390,Denmark,DNK
+DJI,522,Djibouti,DJI
+DMA,54,Dominica,DMA
+DOM,42,Dominican Republic,DOM
+ETM,860,East Timor,TLS
+ECU,130,Ecuador,ECU
+EGY,651,Egypt,EGY
+SAL,92,El Salvador,SLV
+EQG,411,Equatorial Guinea,GNQ
+ERI,531,Eritrea,ERI
+EST,366,Estonia,EST
+ETH,530,Ethiopia,ETH
+FSM,987,Federated States of Micronesia,UMI
+FIJ,950,Fiji,FJI
+FIN,375,Finland,FIN
+FRN,220,France,FRA
+GAB,481,Gabon,GAB
+GAM,420,Gambia,GMB
+GRG,372,Georgia,GEO
+GDR,265,German Democratic Republic,DDR
+GFR,260,German Federal Republic,DEU
+GMY,255,Germany,DEU
+GHA,452,Ghana,GHA
+GRC,350,Greece,GRC
+GRN,55,Grenada,GRD
+GUA,90,Guatemala,GTM
+GUI,438,Guinea,GIN
+GNB,404,Guinea-Bissau,GNB
+GUY,110,Guyana,GUY
+HAI,41,Haiti,HTI
+HAN,240,Hanover,#N/A
+HSE,273,Hesse Electoral,#N/A
+HSG,275,Hesse Grand Ducal,#N/A
+HON,91,Honduras,HND
+HUN,310,Hungary,HUN
+ICE,395,Iceland,ISL
+IND,750,India,IND
+INS,850,Indonesia,IDN
+IRN,630,Iran,IRN
+IRQ,645,Iraq,IRQ
+IRE,205,Ireland,IRL
+ISR,666,Israel,ISR
+ITA,325,Italy,ITA
+JAM,51,Jamaica,JAM
+JPN,740,Japan,JPN
+JOR,663,Jordan,JOR
+KZK,705,Kazakhstan,KAZ
+KEN,501,Kenya,KEN
+KIR,946,Kiribati,KIR
+KOR,730,Korea,KOR
+KOS,347,Kosovo,#N/A
+KUW,690,Kuwait,KWT
+KYR,703,Kyrgyzstan,KGZ
+LAO,812,Laos,LAO
+LAT,367,Latvia,LVA
+LEB,660,Lebanon,LBN
+LES,570,Lesotho,LSO
+LBR,450,Liberia,LBR
+LIB,620,Libya,LBY
+LIE,223,Liechtenstein,LIE
+LIT,368,Lithuania,LTU
+LUX,212,Luxembourg,LUX
+MAC,343,Macedonia,#N/A
+MAG,580,Madagascar,MDG
+MAW,553,Malawi,MWI
+MAL,820,Malaysia,MYS
+MAD,781,Maldives,MDV
+MLI,432,Mali,MLI
+MLT,338,Malta,MLT
+MSI,983,Marshall Islands,MHL
+MAA,435,Mauritania,MRT
+MAS,590,Mauritius,MUS
+MEC,280,Mecklenburg Schwerin,#N/A
+MEX,70,Mexico,MEX
+MOD,332,Modena,#N/A
+MLD,359,Moldova,MDA
+MNC,221,Monaco,MCO
+MON,712,Mongolia,MNG
+MNG,341,Montenegro,MNE
+MOR,600,Morocco,MAR
+MZM,541,Mozambique,MOZ
+MYA,775,Myanmar,MMR
+NAM,565,Namibia,NAM
+NAU,970,Nauru,NRU
+NEP,790,Nepal,NPL
+NTH,210,Netherlands,NLD
+NEW,920,New Zealand,NZL
+NIC,93,Nicaragua,NIC
+NIR,436,Niger,NER
+NIG,475,Nigeria,NGA
+PRK,731,North Korea,PKR
+NOR,385,Norway,NOR
+OMA,698,Oman,OMN
+PAK,770,Pakistan,PAK
+PAL,986,Palau,PLW
+PAN,95,Panama,PAN
+PAP,327,Papal States,#N/A
+PNG,910,Papua New Guinea,PNG
+PAR,150,Paraguay,PRY
+PMA,335,Parma,#N/A
+PER,135,Peru,PER
+PHI,840,Philippines,PHL
+POL,290,Poland,POL
+POR,235,Portugal,PRT
+QAT,694,Qatar,QAT
+ROM,360,Romania,ROU
+RUS,365,Russia,RUS
+RWA,517,Rwanda,RWA
+SKN,60,Saint Kitts and Nevis,KNA
+SLU,56,Saint Lucia,LCA
+SVG,57,Saint Vincent and the Grenadines,VCT
+WSM,990,Samoa,WSM
+SNM,331,San Marino,SMR
+STP,403,Sao Tome and Principe,STP
+SAU,670,Saudi Arabia,SAU
+SAX,269,Saxony,#N/A
+SEN,433,Senegal,SEN
+SEY,591,Seychelles,SYC
+SIE,451,Sierra Leone,SLE
+SIN,830,Singapore,SGP
+SLO,317,Slovakia,SVK
+SLV,349,Slovenia,SVN
+SOL,940,Solomon Islands,SLB
+SOM,520,Somalia,SOM
+SAF,560,South Africa,ZAF
+ROK,732,South Korea,KOR
+SSD,626,South Sudan,SSD
+SPN,230,Spain,ESP
+SRI,780,Sri Lanka,LKA
+SUD,625,Sudan,SDN
+SUR,115,Suriname,SUR
+SWA,748,Swaziland,SWZ
+SWD,380,Sweden,SWE
+SWZ,225,Switzerland,CHE
+SYR,652,Syria,SYR
+TAW,713,Taiwan,TWN
+TAJ,702,Tajikistan,TJK
+TAZ,510,Tanzania,TZA
+THI,800,Thailand,THA
+TOG,461,Togo,TGO
+TON,955,Tonga,TON
+TRI,52,Trinidad and Tobago,TTO
+TUN,616,Tunisia,TUN
+TUR,640,Turkey,TUR
+TKM,701,Turkmenistan,TKM
+TUS,337,Tuscany,#N/A
+TUV,947,Tuvalu,TUV
+SIC,329,Two Sicilies,#N/A
+UGA,500,Uganda,UGA
+UKR,369,Ukraine,UKR
+UAE,696,United Arab Emirates,ARE
+UKG,200,United Kingdom,GBR
+USA,2,United States of America,USA
+URU,165,Uruguay,URY
+UZB,704,Uzbekistan,UZB
+VAN,935,Vanuatu,VUT
+VEN,101,Venezuela,VEN
+DRV,816,Vietnam,VNM
+WRT,271,Wuerttemburg,#N/A
+YEM,679,Yemen,YEM
+YUG,345,Yugoslavia,#N/A
+ZAM,551,Zambia,ZMB
+ZAN,511,Zanzibar,#N/A
+ZIM,552,Zimbabwe,ZWE
+SER,,Serbia,SRB

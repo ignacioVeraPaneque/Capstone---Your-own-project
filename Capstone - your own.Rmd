@@ -1,0 +1,1025 @@
+---
+title: 'On the Classification of the Cuban Political Regime: 1959 - 2015'
+subtitle: 'HarvardX Data Science Professional Certificate'
+author: 'Ignacio Vera'
+header-includes:
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+- \usepackage[table]{xcolor}
+output:
+  pdf_document:
+    latex_engine: xelatex
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r libraries}
+if(!require(haven)) install.packages('haven', repos = 'http://cran.us.r-project.org')
+if(!require(tidyverse)) install.packages('tidyverse', repos = 'http://cran.us.r-project.org')
+if(!require(caret)) install.packages('caret', repos = 'http://cran.us.r-project.org')
+if(!require(ggrepel)) install.packages('ggrepel', repos = 'http://cran.us.r-project.org')
+if(!require(doParallel)) install.packages('doParallel', repos = 'http://cran.us.r-project.org')
+if(!require(rsample)) install.packages('kableExtra', repos = 'http://cran.us.r-project.org')
+if(!require(ConfusionTableR)) install.packages('ConfusionTableR', repos = 'http://cran.us.r-project.org')
+if(!require(kableExtra)) install.packages('kableExtra', repos = 'http://cran.us.r-project.org')
+if(!require(readxl)) install.packages('readxl', repos = 'http://cran.us.r-project.org')
+if(!require(pander)) install.packages('pander', repos = 'http://cran.us.r-project.org')
+```
+
+```{r theme_setting}
+# set theme for ggplot
+theme_set(theme_minimal() + 
+            theme(legend.position = 'bottom',
+                  panel.grid = element_blank(),
+                  text = element_text(family = 'serif'),
+                  panel.border = element_rect(color = 'grey66', 
+                                               fill = NA, 
+                                          linewidth = .5),
+          plot.title = element_text(size = 11), 
+          plot.subtitle = element_text(size = 9))) 
+```
+
+*Summary: Classifying the political regime that has prevailed Cuba over the past sixty-five years is challenging, yet essential for assessing the legacies of Fidel and Raúl Castro, interpreting their policy choices, and understanding the island's disproportionate influence on international relations. Ultimately, this classification enriches our understanding of Cuban history and its broader significance. In this project, I address the classification of governance forms in Cuba from 1959 to 2015, treating it as a multi-class classification problem. Using data from four sources, I first train a Naive Bayes classifier, followed by a Random Forest model. Common evaluation metrics reveals that the Naive Bayes model underperforms compared to the random forest. Notably, the Naive Bayes produces unlikely results given the non-democratic nature of the Cuban political regime, while the random forest yields more sensible outcomes. More specifically, the Random Forest results indicate a shift from a personalist rule (1959-2007) to a military rule (2008-2015) during Fidel and Raúl Castro's tenures, respectively. However, this outcome markedly differs from Anckar and Fredriksson's (2020) classification of the entire period as a single-party rule.*
+
+## I. Introduction
+
+```{r archigos}
+# load first database, archigos
+archigos <- 
+  read_stata('Archigos_4.1_stata14.dta',
+             encoding = 'latin1',
+             col_select = NULL,
+             skip = 0,
+             n_max = Inf,
+             .name_repair = 'unique')
+# transform some predictors
+archigos <- archigos |> 
+  mutate(
+    startdate = ymd(startdate),
+    enddate = ymd(enddate),
+# create a feature (Years in office) for the approximate number of         
+# years leader holds power
+    `Years in office` = year(enddate) - year(startdate))
+# approximate number of years Fidel Castro held power
+years_castro <- archigos |>
+  select(`Years in office`, leader, idacr) |> 
+  filter(leader == 'Castro' & idacr == 'CUB')
+
+archigos <- archigos |> 
+  mutate(fties = ifelse(fties =='NA', 'No', 'Yes'))
+
+# select the most relevant potential variables. For details 
+# on the predictors below, please refer to Annex II
+archigos <- archigos |> 
+  select(obsid, yrborn, leader, startdate, enddate, 
+         entry, exit, exitcode, prevtimesinoffice, gender, 
+         numentry, numposttenurefate, fties, `Years in office`) 
+# glimpse(archigos)
+```
+
+```{r chisols, eval = T}
+chisols <- read_csv('CHISOLSll5_0.csv')
+
+# rename 'archigosobsid' (observation ID) to 'obsid' to 
+# facilitate dataset joining
+chisols <- chisols |> 
+  rename(obsid = archigosobsid) |> 
+  mutate(year = as.integer(str_extract(obsid, '\\d{4}')),
+  idacr = str_sub(obsid, 1, 3)) 
+
+chisols <- chisols |>
+  mutate(year = as.integer(str_extract(obsid, '\\d{4}')))
+
+# join archigos and chisols
+
+chisols <- chisols |> 
+  select(-leader) # removed to avoid duplicate
+archigos_chisols <- left_join(chisols, archigos, by = 'obsid') 
+
+# select some relevant predictors
+archigos_chisols <- archigos_chisols |> 
+  select(obsid, year, leader, yrborn, startdate, entry, exit, exitcode,
+prevtimesinoffice, gender, fties, statename, leaderpos, 
+affiliation, `Years in office`) |> 
+  mutate(country_abb = str_sub(obsid, 1, 3))
+
+# glimpse(archigos_chisols)
+archigos_chisols <- archigos_chisols |> 
+  filter(year <= 2015) # max year
+```
+
+```{r function_for_filling_missing_years, eval = T}
+# function for filling missing years within each country ('statename')
+fill_missing_years <- function(data, year_column, group_column) {
+  # extract the numeric year part from the year_column
+  data <- data  |> 
+    mutate(numeric_year = as.numeric(sub('-.*', '', .data[[year_column]])))
+  # generate a complete dataset with all possible combinations of statename and years
+  complete_data <- expand.grid(
+    country_abb = unique(data[[group_column]]),
+    year = seq(min(data$numeric_year, na.rm = TRUE), max(data$numeric_year, na.rm = TRUE))
+  ) |> 
+    mutate(year = as.character(year))  # Ensure the year is character type for merging
+  # generate all possible year variations based on existing suffixes
+  unique_suffixes <- unique(sub('^[^-]*', '', data[[year_column]]))
+  complete_data_expanded <- complete_data |> 
+    crossing(suffix = unique_suffixes) |> 
+    mutate(year = paste0(year, suffix)) |> 
+    select(-suffix)
+# merge the complete dataset with the original data
+  merged_data <- merge(
+    complete_data_expanded, 
+    data, 
+    by.x = c(group_column, 'year'), 
+    by.y = c(group_column, year_column), 
+    all.x = TRUE
+  )
+  # Fill missing values by replicating data from the previous 
+  # available year within each group
+  filled_data <- merged_data |> 
+    group_by(.data[[group_column]]) |> 
+    fill(everything(), .direction = 'down') |>
+    ungroup()
+  
+  return(filled_data)
+}
+
+# fill missing years in the 'year' column, grouped by location and selecting relevant predictors
+archigos_chisols_filled <- fill_missing_years(archigos_chisols, 'year', 'country_abb')
+archigos_chisols_filled <- archigos_chisols_filled |> 
+  filter(year >= 1950 & year <= 2015)
+
+```
+
+Table 1 below presents an overview of the diverse forms of governance in Cuba from 1902 to 1959, leading up to the rise of the Castros to power.
+
+```{r table_1}
+table_1 <- tribble(
+~Period,                       ~Years,      ~Classification,
+'1902 - 1905, 1916 - 1933',    22,         'Personalist rule',
+'1940 - 1952',                 13,         'Semi-presidentialism', 
+'1934 - 1939, 1952 - 1959',    14,         'Military rule',
+'1909 - 1915',                 7,          'Presidentialism',
+'1906 - 1908',                 3,          'US Military occupation') |> 
+  arrange(desc(Years)) |> 
+  kbl(caption = 'Cuba: Forms of Governance (1902 - 1959)') |> 
+  kable_styling(latex_options = c('striped', 'hold_position')) |> 
+  footnote('Based on the Anckar and Fredriksson (2020) dataset', 
+           footnote_as_chunk = TRUE)
+table_1
+```
+
+Over this period, the two most frequent forms of the political regimes in Cuba were as follows:
+
+- **Personalist Rule:**, which spanned 22 years in total. This rule is characterized by the dominance of a single leader who centralizes power and often rules autocratically. In Cuba, this occurred during two periods: from 1902 to 1905 and again from 1916 to 1933.
+
+- **Military Rule:**, which occurred for a total of 14 years and is distinguished by the control of the government by military leaders. Even within this classification, the leadership was often centered around a prominent figure or caudillo. A notable example is Fulgencio Batista, who dominated Cuban politics during two key periods, the second of which was a strict military dictatorship (1952 - 1959). 
+
+Both personalist and military rules in Cuba shared a common feature: the centralization of power in the hands of a single, dominant leader or caudillo. During the military rule from 1952 to 1959, Fulgencio Batista exemplified this parallel. As a caudillo, Batista maintained undisputed political leadership, consolidating military and political power in his hands, similar to leaders during personalist rule periods. Batista’s reign began with a coup in 1952, and he ruled as a dictator until the Cuban Revolution in 1959. This period highlights how, even under the guise of military governance, personalist traits were prominent, with Batista exercising significant personal control over the state.
+
+Not surprisingly, characterizations of the Cuban political regime often reflect the leader's personality, shaping perceptions of the entire political system.
+
+The main objective of this project is to provide a simple yet systematic classification of the Cuban political regime from 1959 to 2015. This timeframe encompasses both Fidel Castro’s tenure of more than 49 years (1959 - 2008) and the initial eight years of Raúl Castro’s government (2008 - 2015). Fidel’s tenure is one of the longest since the 1850s, matched only by Emperor Pedro II of Brazil, and surpassed by three monarchs: Nikola I Petrović-Njegoš of Montenegro, George I of Greece, and Francis Joseph I of Austria (see Table 2 below and Figure 1 for context).
+
+```{r table_2, eval = T}
+# create table with top five longest political tenures since the 1840s
+table_2 <- archigos |> 
+  select(leader, startdate, enddate, `Years in office`) |> 
+  filter(`Years in office` >= 49) |> 
+  kbl(col.names = c('Leader', 'Entry date', 'Exit date', 'Years in power'), caption = 'The world: Top Five Longest Political Tenures (1840 - 2015)') |> 
+  kable_styling(latex_options = c('striped', 'hold_position')) |> 
+  footnote('Based on the Goemans et al (2019) dataset', footnote_as_chunk = T)
+```
+
+```{r  figure_1, eval = T}
+# figure that shows Castro's long tenure in perspective
+figure_1 <- archigos |> 
+  drop_na() |> 
+  ggplot(aes(startdate, `Years in office`, label = leader)) +
+  geom_hline(yintercept = 49, linewidth = .09, color = 'orange') +
+  geom_point(size = .21) +
+  geom_text_repel(min.segment.length = 0, 
+                  data = subset(archigos, `Years in office` >= 49), size = 2.75) + 
+  labs(
+    title = 'Figure 1: The long tenure of Fidel Castro in historical context', 
+    subtitle = '(The orange line intersects the vertical axis at 49, the approximate number of years Fidel Castro held power)', 
+       x = 'Year the leader assumes power', y = 'Years in power', caption = 'Source: Goemans et al (2019)')
+
+table_2
+figure_1
+```
+
+Fidel Castro’s extraordinarily long rule overshadowed Raúl’s presence despite Raúl serving as Vice President, Second Secretary of the Communist Party and Minister of Defense.
+
+On 31 July 2006, Raúl Castro was *"provisionally"* ^[Castro (2008).] handed power after his brother, Fidel Castro, stepped aside due to illness. The emergence of a softer form of non-democratic regime with a more pluralistic approach to governance became theoretically possible when Fidel Castro announced he had delegated his responsibilities as the *"principal promoter"* ^[Castro (2008).] of the Health, Education, and National Energy Revolution programs to six loyalists from his inner circle. However, as long as his health allowed, Fidel most likely continued to influence most important political decisions behind the scenes.
+
+Less than two years later, on 24 February 2008, Raúl Castro was formally vested with all powers. During his tenure, Raúl remained conspicuously unseen and astonishingly overshadowed by his brother's dominant personality. Raul's political speeches constantly invoked Fidel, since preserving the facade of traditional Fidelism not only aims to borrow political legitimacy but also serves as the most straightforward means of continuing to exercise absolute power.
+
+In 2019, Raúl Castro handed over control to Miguel Díaz-Canel Bermúdez as President and, since 2021, as First Secretary of the Communist Party of Cuba.
+
+Classifying the political regime governing Cuba over the past sixty-five years has been a challenging endeavor. As noted by Hoffman (2011), *"...Cuba since 1959 can not only be classified as a 'rebel regime,' 'military,' or 'one‐party' rule, but also as a case combining charismatic leadership with forms of 'rationalized' bureaucratic authority in ways that have considerably changed over time."* ^[Hoffman (2011, p. 6)]. Consequently, Fidel Castro's leadership style and governance have been subject to diverse interpretations, reflecting the multifaceted nature of the regime. Terms used to describe him include "tyrannic", "populist", "totalitarian", "dictatorial", "non-democratic", "gerontocratic", "authoritarian", and the more colorful phrases such as *"genuine dictator"* ^[Müllerson (2023, p. 871).] and *"movie star dictator"* ^[Bardach (2002, Chapter 8).], or even *"a dictator held up as a clown"* ^[Pérez Firmat (2010, p. 168).], with some depicting his regime as holding *"the most abject and unreformable of dictatorships"* ^[Dalrymple (p. 145).]. Each of these terms highlights different aspects of his rule, from his authoritarian control and suppression of political opposition to his ability to inspire and mobilize support among the masses.
+
+For some observers, the transfer of power from Fidel Castro to his brother Raúl Castro marked a significant change in Cuba's leadership style. As early as 2011, two authors characterized the Cuban political system as going through *"...the final phase of transition from charismatic leadership to institutionalized leadership."* ^[Abrahams and López-Levy (2011, p. 92)] Surprisingly, five years later, one of these authors argued that *"Raúl Castro’s presidency has completed a political transition from totalitarianism to post-totalitarianism."* ^[López-Levy (2016).] Despite the inherent contradiction in these statements, they suggest a transitions towards an undefined, though still autocratic, form of governance under Raúl Castro.
+
+Ultimately, if the classification of Fidel Castro's era is challenging, that of Raúl's is even more elusive, perhaps reflecting Raúl's reserved and enigmatic nature. However, beyond the superficial differences in personalities and styles, Raúl has consistently shown one defining trait: his profound reverence for his brother. He looks up to Fidel more than any other loyalist, embodying one of the most surreal slogans in contemporary Cuban politics: *Yo soy Fidel (I am Fidel)*.
+
+The remainder of this document is organized around the following sections: Section II describes the data and methods used for obtaining and tranforming the dataset used in this project. Section III discusses two classification algorithms (Naive Bayes and Random Forest) used for the classification of the Cuban political regime(s) over the period under consideration (1959 - 2015). This discussion includes a brief overview of the relative advantages and disadvantages of these algorithms. Section IV presents the results obtained with these classification algorithms and assesses their performance. Section V wraps up the project and offers concluding remarks. Finally, section VI discusses limitations of the study and possible extensions for future research.
+
+```{r dataset_regimes, eval = T}
+# regimes data set; source: Anckar and Fredriksson (2020)
+regimes <- read_xlsx('anckarfredrikssonepsdatafinal2.0.xlsx')
+regimes <- regimes |> 
+  mutate(
+         year = as.integer(year),
+regimenarrowcat = case_when(
+         regimenarrowcat == 0 ~ 'Parliamentarism',
+         regimenarrowcat == 1 ~ 'Semi-presidentialism',
+         regimenarrowcat == 2 ~ 'Presidentialism',
+         regimenarrowcat == 3 ~ 'Semi-monarchy',
+         regimenarrowcat == 4 ~ 'Single-party rule',
+         regimenarrowcat == 5 ~ 'Multi-party autoritarian rule',
+         regimenarrowcat == 6 ~ 'Personalist rule',
+         regimenarrowcat == 7 ~ 'Military rule',
+         regimenarrowcat == 8 ~ 'Absolute monarchy',
+         regimenarrowcat == 9 ~ 'Monarchic oligarchy',
+         regimenarrowcat == 10 ~ 'Other oligarchy',
+         .default = 'Missing' 
+       )) 
+# select only the relevant variables from regimes
+regimes <- regimes |> 
+  select(year, abbreviation, democracy, regimenarrowcat) |> 
+  mutate(abb_year = paste0(abbreviation, '-', year)) |> 
+  rename(abb = abbreviation) |>  # to facilitate joining with COW
+  filter(year >= 1950 & year <= 2015) 
+
+archigos_chisols_filled <- archigos_chisols_filled |> 
+  mutate(abb_year = paste0(country_abb, '-', year))
+# join the three datasets: archigos, CHISOLS and regimes
+arc_chi_reg <- left_join(
+  distinct(archigos_chisols_filled) |> 
+  select(-year), 
+  distinct(regimes), 
+  by = 'abb_year') |>
+  drop_na()
+```
+
+```{r un_dataset, eval = T}
+# load UN dataset (demographics)
+demographics <- read_csv(
+  'WPP2022_Demographic_Indicators_Medium.csv')
+
+demographics_1950_2015 <- demographics |> 
+  filter(!is.na(ISO3_code)) |> 
+  mutate(year = as.integer(Time), 
+     ISO_year = paste0(str_trim(ISO3_code), '_', str_trim(year))) |> 
+  filter(year >= 1950 & year <= 2015) 
+
+# Remove some empty, almost empty and/or otherwise irrelevant variables
+# and limit the span
+demographics_1950_2015 <- demographics_1950_2015 |> 
+  select(-c(Notes, ISO2_code, SortOrder, LocID, 
+            SDMX_code, LocTypeID,LocTypeName, 
+            ParentID, Location, VarID, Variant, 
+            DoublingTime)) 
+
+#glimpse(demographics_1950_2015)
+```
+
+```{r correlates_of_war, eval = T}
+# map 'Correlates of War' (COW) codes to ISO3 codes
+# to facilitate dataset joining
+COW <- read_csv('COW-country-codes.csv')
+COW <- COW |># (StateAbb is not an ISO3 code; it's just a country name abbreviation)
+rename(abb = StateAbb) |>
+  mutate(abb = case_when(
+    abb == 'ROM' ~ 'RUM', # Fix code for Romania, wrongly coded
+    abb == 'RVN' ~ 'DRV', # Fix code for Viet Nam, wrongly coded 
+    .default = abb))
+
+df_1950_2015 <- arc_chi_reg |> 
+left_join(COW) 
+  
+df_1950_2015 <- df_1950_2015 |> 
+  mutate(ISO_year = paste0(str_trim(ISO3_code), '_', str_trim(year))) |> 
+  select(-year, -ISO3_code)
+  #glimpse(df_1950_2015)
+```
+
+```{r join_all_datasets, eval = T}
+# final join: the four datasets
+df_1950_2015 <- left_join(df_1950_2015, demographics_1950_2015, 
+                          by = 'ISO_year')
+```
+
+```{r brothers, eval = T}
+# get data for the Castros (brothers) 
+brothers <- df_1950_2015 |> 
+  filter(str_detect(leader, 'Castro') , 
+         statename == 'Cuba')
+# remove data for the Castros from dataset
+df_1950_2015 <- df_1950_2015 |> 
+  anti_join(brothers, df, by = 'obsid') |> 
+  select(-obsid)
+
+# removing obsid from brother
+brothers <- brothers |> 
+  select(-obsid)
+
+# removing some irrelevant predictors
+df_1950_2015 <- df_1950_2015 |> 
+  select(-c(leader, startdate))
+
+# convert all character columns to factor
+convert_to_factor <- function(data) {
+  data |> 
+    mutate(across(where(is.character), as.factor))
+}
+df_1950_2015 <- convert_to_factor(df_1950_2015)
+
+# (almost) final feature selection
+df_1950_2015 <- df_1950_2015 |> 
+  select(-c(exit, country_abb, StateNme, abb_year, ISO_year, abb, exit,
+         exitcode, leaderpos, affiliation, year, InfantDeaths, statename)) |> 
+  select(!starts_with('TPopulation')) |> 
+  select(!starts_with('ISO3_code'))
+
+# remove NAs
+df_1950_2015 <- df_1950_2015 |> 
+  drop_na()
+
+# exclude gender, which shows near-zero variance (Refer to Annex...)
+df_1950_2015_final <- df_1950_2015 |> 
+  select(-gender)
+```
+
+## II. Data and Methods
+
+**Data Sources**: In this project, I use variables extracted from four different datasets to predict the classification of the political regime in Cuba from 1959 to 2015. Three of these datasets are mostly used in Political Science:
+
+- **Archigos** (Goemans et al, 2009): This dataset is a comprehensive compilation of political leaders and regimes worldwide covering the period 1875 - 2015 (version 4.1). It provides detailed information about the individuals who have held power in various countries, including their tenure, the circumstances of their coming to and leaving office, and the political context of their leadership. This dataset is particularly valuable for studying political stability, leadership changes, and regime types across different countries and historical periods.
+
+- **CHISOLS** (Comparative Historical Indicators of State-Level Societies, Mattes et al, 2016): The CHISOLS dataset is a historical and sociopolitical database that includes a wide range of variables on state-level societies with populations of more than than half a million inhabitants spanning from 1919 to 2018. It encompasses information on social, economic, and political structures, allowing for comparative analysis across different historical periods and regions. The dataset is used for examining long-term trends and patterns in state development, governance, and societal change.
+
+- **Political Regimes of the World, Dataset v. 2.0** (Anckar and Fredriksson, 2020): This dataset provides a comprehensive classification of political regimes globally, including *...all countries that have been independent at any point in time since WWII"*, encompassing the years 1800 - 2019. It offers detailed categorizations and codifications of various regimes based on specific political characteristics and governance structures.
+
+In addition, I use selected demographic variables published by the United Nations Population Division (United Nations, 2022). This dataset provides comprehensive demographic data and projections for countries and regions worldwide, including historical and projected population figures, fertility rates, mortality rates, migration patterns, and other vital statistics.
+
+These datasets are well-documented and consistently coded, having been cleaned and maintained over many years. Consequently, data cleaning was kept to a minimum, for instance, to remove duplicates and missing data. Only minor feature engineering was required, such as extracting years from unique identifiers combining ISO3 country codes ^[ISO 3166-1 alpha-3 codes, also referred to as ISO3 country codes, are three-letter identifiers for countries, territories, and special geographical areas. They provide a standardized way to refer to locations and are issued by the International Organization for Standardization (ISO).] with the year in which leaders took office, and estimating the approximate number of years leaders are in power. The most challenging aspects of data manipulation were the creation of a unique identifier to join the UN dataset with the three political datasets used, and the development of a function to fill missing years in two of the political science datasets used (Archigos and CHISOLS). ^[Please refer to the code chunk titled *"function_for_filling_missing_years"* and Annex I for an explanation of how this function works.]
+
+The final assembled dataset spans from 1950 to 2008, containing `r dim(df_1950_2015_final)[1]` rows and `r dim(df_1950_2015_final)[2]` columns, including the target variable.
+
+I use the systematic classification provided by Anckar and Fredriksson (2020) as the target variable. This classification assigns 12 mutually exclusive classes to political regimes ^[To the best of my knowledge, this variable (coded as "regimenarrowcat" in the Anckar and Fredriksson (2020) dataset) represents the most granular classification of political regimes available.] Table 3 below presents these categories and their frequencies in the dataset.
+
+```{r table_target_variable, eval = T}
+# table - target
+table_target <- df_1950_2015_final |> 
+  count(regimenarrowcat) |>
+  mutate(Proportion = round(100 * n / sum(n))) |> 
+  arrange(desc(n)) |> kbl(
+    col.names = c('Classes', 'Frequency', 'Proportion (%)'), 
+    caption = 'Distribution of the 12 classes in the target variable') |> 
+  kable_styling(latex_options = c('striped', 'hold_position')) |> 
+  footnote('Based on Anckar and Fredriksson (2020)', footnote_as_chunk = T)
+
+table_target    
+```
+
+The following four classes, listed in the bottom portion of Table 3, each have relatively small proportions (less than 5 percent), resulting in an imbalanced target variable:
+
+- Missing (2 percent)^[This category includes military occupation, civil war or otherwise unclear categories (Anckar and Fredriksson (2020, p. 4).]
+- Other oligarchy (1 percent)
+- Semi-monarchy (1 percent)
+- Monarchic oligarchy (1 percent)
+
+To address imbalanced classes in the target variable I used the inverse of the class weights thus allowing the classifies to pay more attention to the minority classes during training. ^[Refer to section II for more details.]
+
+```{r predictors, eval = T}
+# table - dataset used
+table_predictors <- df_1950_2015_final |> 
+  map_df(~ class(.)) |> 
+  pivot_longer(everything(), names_to ='Feature', values_to = 'Class') |> 
+  mutate(Class = ifelse(Class == 'factor', 'categorical', Class))
+
+UN_demographic_notes <- read_csv('WPP2022_Demographic_Indicators_notes.csv', 
+                                 show_col_types = FALSE) |> 
+                                 rename(Feature = Indicator)
+
+table_predictors <- table_predictors |> 
+left_join(UN_demographic_notes, by = 'Feature') |> 
+mutate(Source = c(rep('Goemans et al (2009)', 5), 
+                  rep('Mattes et al (2016)', 2), 
+                  #rep('Anckar and Fredriksson (2020)', 5), 
+                  rep('UN Population Division (2022)', 
+                      nrow(table_predictors) -7))) |>
+select(-c(Topic, IndicatorNo, Unit)) |> 
+  rename(`Brief description` = IndicatorName) |>
+  # complete some missing descriptions
+  mutate(`Brief description` = case_when( 
+    Feature == 'yrborn' ~ 'Year the leader was born', 
+    Feature == 'entry' ~ 'How the leader reaches power',
+    Feature == 'prevtimesinoffice' ~ 'Number of times a leader has previously been in office',
+    Feature == 'fties' ~ 'Family ties to a previous or future leader',
+    Feature == 'Years in office' ~'Years the leader held the position',
+    Feature == 'year' ~ 'Year leader enters office',
+    Feature == 'democracy' ~ 'Binary variable for democracy',
+    Feature == 'leaderpos' ~  'Highest position the leader held',
+    Feature == 'affiliation' ~ "Leader's Party affiliation",
+    Feature == 'CCode' ~ 'Country code',
+    .default = Feature)) |> 
+  mutate(`Brief description` = ifelse(`Brief description` == 'numeric_year', 'Year leader enters office', `Brief description`)) |>
+filter(Feature != 'regimenarrowcat' & Feature != 'Time') # these are not 
+  # predictors; just the target variable and (part of) an indicator variable to join 
+  # datasets, respectively
+```
+
+**Predictors**: A total of `r nrow(table_predictors)` predictors were used in both the Naive Bayes and Random Forest classification algorithms. ^[Initially, the Random Forest algorithm utilized 56 predictors. However, following feature importance analysis, only 5 predictors remained significant. Refer to Table 5 in Section III for details.] Please refer to Table 4 in Annex II for details on these predictors, including a brief description, their class, and the data source from which they were selected.
+
+```{r X_and_y, eval = T}
+# define the predictors and target
+predictors <- df_1950_2015_final |> 
+  select(-regimenarrowcat)
+target <- factor(df_1950_2015_final$regimenarrowcat)
+
+# rename the levels of the target variable to ensure they are valid R variable names
+levels(target) <- make.names(levels(target))
+
+# split the data into training and testing sets
+set.seed(1931, sample.kind = 'Rounding')
+trainIndex <- createDataPartition(target, p = .8, list = FALSE)
+X_train <- predictors[trainIndex, ]
+X_test  <- predictors[-trainIndex, ]
+y_train <- target[trainIndex]
+y_test  <- target[-trainIndex]
+```
+
+```{r class_weights, eval = T}
+# calculate weights to deal with imbalanced classes
+class_counts  <- table(y_train)
+total_counts  <- sum(class_counts)
+class_weights <- total_counts / class_counts
+weights <- class_weights[as.character(y_train)]
+```
+
+```{r naive_bayes, eval = T}
+# combine predictors and target for training and testing
+train_data <- data.frame(X_train, y_train)
+test_data  <- data.frame(X_test, y_test)
+
+# # define the control parameters for 5-fold CV
+train_control <- trainControl(method = 'cv', number = 5)
+
+# set up the parameters grid
+nb_grid <- expand.grid(fL = seq(0, 1, by = .5), 
+                usekernel = c(TRUE, FALSE), 
+                   adjust = seq(.5, 1, by = .5))
+
+# initialize parallel processing
+cl_nb <- makeCluster(detectCores() - 1)
+registerDoParallel(cl_nb)
+
+# train the NB classifier
+nb_model <- train(y_train ~ ., 
+                  data = train_data, 
+                  method = 'nb',
+                  weights = weights,
+                  trControl = train_control,
+                  tuneGrid = nb_grid)
+# stop parallel processing
+stopCluster(cl_nb)
+
+# tuned parameters
+nb_tuned_parameters <- nb_model$bestTune
+
+# predict on the test set using the NB model
+nb_predictions <- predict(nb_model, newdata = test_data)
+
+# evaluate the model performance
+conf_matrix_nb <- confusionMatrix(nb_predictions, y_test)
+conf_matrix_nb_overall <- as.matrix(conf_matrix_nb, what = "overall") 
+conf_matrix_nb_classes <- as.matrix(conf_matrix_nb, what = "classes") 
+
+# extract precision and recall for each class
+precision_nb <- conf_matrix_nb$byClass[,'Precision']
+recall_nb <- conf_matrix_nb$byClass[, 'Recall']
+
+# calculate F1 for each class, while handling NA values
+F1_nb <- ifelse(is.na(precision_nb) | is.na(recall_nb), 0, 
+                2 * ((precision_nb * recall_nb) / (precision_nb + recall_nb)))
+
+# get macro statistics
+macro_precision_nb <- mean(precision_nb)
+macro_recall_nb <- mean(recall_nb)
+macro_F1_nb <- mean(F1_nb, na.rm = TRUE)
+
+# standardize the column names in X_train and 'brothers'
+names(X_train)  <- make.names(names(X_train))
+names(brothers) <- make.names(names(brothers))
+
+# predict on 'brothers' with tuned NB classifier
+nb_predictions <- predict(nb_model, newdata = brothers)
+
+# NB results
+nb_results <- tibble(Years = 1959:2015, 
+                     `Naive Bayes` = levels(y_train)[nb_predictions])
+```
+
+```{r RF_for_five_top_predictors, eval = T}
+# define the control parameters for 5-fold CV
+control <- trainControl(
+  method = 'cv',                  
+  number = 5)
+# define grid for tuning mtry
+rf_grid <- expand.grid(mtry = seq(2, 6, by = 1))
+
+# initialize parallel processing
+cl_rf <- makeCluster(detectCores() - 1)
+registerDoParallel(cl_rf)
+# train the RF with parameter tuning
+model <- train(
+  x = X_train,
+  y = y_train,
+  method = 'rf',
+  trControl = control,
+  weights = weights,
+  ntree = 1000,
+  importance = T,
+  tuneGrid = rf_grid)
+# stop parallel processing
+stopCluster(cl_rf)
+
+# extract the best value of mtry from the tuned model
+tuned_mtry <- model$bestTune$mtry
+
+# get variable importance
+importance <- varImp(model, scale = F)
+importance_df <- as.data.frame(importance$importance)
+
+# add rownames as a column
+importance_df <- rownames_to_column(
+  importance_df, var = 'predictor')
+
+# get overall importance score, which is either the
+ #column entitled 'Overall', or the second column
+if ('Overall' %in% names(importance_df)) {
+  overall_col <- 'Overall'
+} else {
+  overall_col <- names(importance_df)[2]
+}
+
+# sort predictors by importance
+top_predictors <- importance_df  |> 
+  arrange(desc(!!sym(overall_col))) |> 
+  pull(predictor)
+
+# select the top 5 predictors
+selected_predictors <- top_predictors[1:5]
+
+# standardize the column names in X_train and X_test
+names(X_train)  <- make.names(names(X_train))
+names(X_test)   <- make.names(names(X_test))
+
+# subset the training and testing data with the selected predictors
+X_train_top <- X_train[, selected_predictors]
+X_test_top  <- X_test[, selected_predictors]
+```
+
+```{r final_RF_model, eval = T}
+# train a the RF model with top five predictors
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+model_top <- train(x = X_train_top, 
+                   y = y_train, method = 'rf', 
+                   trControl = control,
+                   ntree = 1000,
+                   weights = weights)
+stopCluster(cl)
+
+# predictions with the final model
+predictions_top <- predict(model_top, X_test_top)
+
+### evaluate the RF final classifier performance ###
+conf_matrix <- confusionMatrix(predictions_top, y_test)
+conf_matrix_classes <- as.matrix(conf_matrix, what = "classes")
+# extract overall accuracy
+accuracy <- conf_matrix$overall['Accuracy']
+
+# extract precision, recall, and F1-score for each class
+precision <- conf_matrix$byClass[, 'Pos Pred Value']
+recall    <- conf_matrix$byClass[, 'Sensitivity']
+F1 <- 2 * (precision * recall) / (precision + recall)
+# handling NaN values in F1, if any
+F1[is.nan(F1)] <- 0
+# calculate macro averages
+macro_precision <- mean(precision, na.rm = TRUE)
+macro_recall <- mean(recall, na.rm = TRUE)
+macro_f1 <- mean(F1, na.rm = TRUE)
+
+# accuracy with 5 predictors
+accuracy_top <- sum(predictions_top == y_test) / length(y_test)
+
+# function to align factor levels
+align_factor_levels <- function(train, brothers) {
+  factor_columns <- names(which(sapply(train, is.factor)))
+  brothers[factor_columns] <- map(factor_columns, ~ {
+    factor(brothers[[.]], levels = levels(train[[.]]))
+  })
+  return(brothers)
+}
+# align factor levels in the 'brothers' data
+brothers <- align_factor_levels(X_train_top, brothers)
+# ensure 'brothers' data only has the selected top predictors
+brother_top <- brothers[, selected_predictors]
+
+# make predictions for the 'brothers'
+new_prediction <- predict(model_top, newdata = brother_top)
+# final results
+final_results <- tibble(Years = 1959:2015, 
+                        `Random forest` = levels(y_train)[new_prediction])
+```
+
+## III. Modeling Approach
+
+Anckar and Fredriksson (2020) classify the the Cuban political regime from 1959 to 2015 as a *"Single party rule"*. However, I aim to predict the classification of the Cuban political regime for this period based on the **implicit assumption** that this classification may not be entirely accurate, given significant events that have taken place recently, notably the transfer of power from Fidel Castro to Raúl Castro in 2008.
+
+I use data from various political regimes worldwide between 1950 and 2015, as well as data for the Cuban political regime between 1950 and 1958, to train two classification algorithms: Naive Bayes and Random Forest.
+
+The initial dataset was split into a training set (80 percent) and a testing set (20 precent) after filtering out the subset corresponding to the regimes of Fidel and Raúl Castro from 1959 to 2015.
+
+To handle class imbalance (see Table 3 in Section II for the original distribution of classes in the target variable), I used the inverse of the class weights in training both classification algorithms. The inverse class weights were calculated as follows:
+
+$$\text{Class weights}_i = \frac{\text{Total counts}}{\text{Class counts}_i}$$
+
+Where $\text{Total counts}$ is the total number of samples in the dataset and $\text{Class counts }_i$ is the number of samples in class \(i\).
+
+Using the inverse of the class weights helps mitigate the effect of class imbalance by ensuring that minority classes are better represented and learned during training. This approach may lead to a more effective model, improving performance on evaluation metrics like precision, recall, and F1-score, especially for the minority classes.
+
+### - Model Selection
+
+I selected Naive Bayes and Random Forest because they differ significantly in their learning mechanisms and feature interaction handling. The Naive Bayes is computationally simpler, utilizing Bayes' Theorem to estimate the posterior distribution of the target under the assumption of conditional independence among predictors. This simplifying assumption makes the algorithm less likely to overfit but potentially prone to missing complex feature relationships.
+
+Random Forest, on the other hand, is an ensemble method that builds multiple decision trees using bootstrapped aggregation (bagging). It selects random subsets of predictors for each tree, capturing complex interactions and non-linear relationships. This results in lower bias and higher variance, effectively handling complex patterns but risking overfitting if not properly tuned, especially with smaller datasets.
+
+Overall, Naive Bayes is suited for simpler problems where computing resources are limited, while Random Forest excels in capturing intricate patterns when feature interactions are crucial for more accurate classification.
+
+### - Hyperparameter tuning: 
+
+For the Naive Bayes algorithm I used a grid search to obtain an optimal combination of values for the following three hyperparameters:
+
+- **fL** If needed, the algorithm employs this parameter to use Laplace correction fL = 1), which adjusts for missing classes in small datasets to prevent zero probabilities.
+
+- **usekernel**, which determines whether kernel density estimation should be used for probability estimation. It is a binary parameter, with options being TRUE or FALSE. When set to TRUE, kernel density estimation is used, and when set to FALSE, a simple density estimation is employed.
+
+- **adjust**, which adjusts the bandwidth of the kernel density estimation if it is used. Lower values result in narrower bandwidths, leading to more "localized" density estimates, while higher values produce broader bandwidths, and smoother density estimates. 
+
+The optimal combination of hyparameters for the Naive Bayes classifier was as follows:
+
+```{r, eval = T}
+nb_tuned_parameters |> 
+  as.matrix() |> 
+  as_tibble() |> 
+  kbl(format = 'latex', booktabs = TRUE, escape = FALSE, 
+    digits = 0, 
+    linesep = '', 
+    caption = 'Tuned parameters for the Naive Bayes classifier') |>
+  kable_styling(latex_options = c('hold_position'))
+```
+
+This combination of hyperparameters for the Naive Bayes classifier indicates that no Laplace correction was applied, kernel density estimation was used for continuous predictors, and the bandwidth of the kernel density estimator was set to half the default value, allowing for less smoothing and potentially capturing more detailed structure in the data.^[Kernel density estimation (KDE) is a non-parametric method used to estimate the probability density function of continuous variables. Instead of assuming a specific distribution, KDE uses the data to estimate the density function with a kernel function, which smooths the data points.This flexible approach can better capture the true distribution of continuous predictors compared to assuming a normal distribution.]
+
+For the Random Forest algorithm I used a grid of values to search for the optimal **mtry** hyperparamenter. This hyperparameter specifies the number of predictors randomly sampled as candidates at each split. The specified grid includes values from 2 to 6, incremented by 1. The optimal*mtry* was `r tuned_mtry`. 
+ 
+I trained an initial Random Forest model using all `r nrow(table_predictors)` predictors to assess feature importance. Importance was measured by the improvement in accuracy and reduction in Gini impurity when a predictor was used in the trees. To obtain more stable results and improve generalization, I increased the number of trees to 1000 (ntree = 1000), compared to the default 500. ^[Kunh and Johnson (2013, pp. 199 - 200), *"...suggest using at least 1,000 trees..."*. James et al. (2023, p. 344), in discussing bagging, note that using *"a very large"* number of threes *"will not lead to overfitting"*. In his seminal paper, Breiman (2001), shows that Random Forests do not overfit due to increases in the number of trees (Theorem 1.2, p. 7).] For the final Random Forest classifier, I also used 1000 trees, the default value for mtry (set to the square root of the number of predictors, which is r floor(sqrt(5))` for this dataset), and the five most important predictors, which are:
+
+```{r, eval = T}
+tibble(Feature = selected_predictors) |> 
+  left_join(table_predictors, by = 'Feature') |> 
+  mutate(Feature = str_replace_all(Feature, '\\.', ' ')) |> 
+  mutate(Class = ifelse(is.na(Class), 'numeric', Class)) |> 
+  mutate(`Brief description` = ifelse(Feature == 'PopSexRatio', 'Population Sex Ratio, as of 1 July', `Brief description`)) |>
+  mutate(`Brief description` = ifelse(Feature == 'PopDensity', 'Population Density, as of 1 July', `Brief description`)) |>
+  mutate(`Brief description` = ifelse(is.na(`Brief description`), 
+                                      'Years the leader held the position', `Brief description`)) |> 
+  mutate(Source = ifelse(is.na(Source), 'Goemans et al (2009)', Source)) |>
+  kbl(format = 'latex', booktabs = TRUE, escape = FALSE, 
+    digits = 0, 
+    linesep = '', 
+    caption = 'The top five most important predictors') |>
+  kable_styling(latex_options = c('hold_position'))
+```
+
+### - Cross-Validation:
+
+I used 5-fold cross-validation (CV), dividing the dataset into five equally-sized subsets. Each iteration of CV reserved one subset as the validation set while training on the remaining 4 subsets. This process repeated 5 times, with each subset serving once as the validation set.
+
+I also experimented with 10-fold cross-validation, following the same procedure as described above. However, I found that the results obtained from 10-fold CV were consistent with those from 5-fold CV. Therefore, I decided to use 5 folds only for computational efficiency. Additionally, using 5 folds allows for a larger proportion of the data to be used for training in each iteration, which can potentially lead to more stable and reliable performance estimates.
+
+For both classifiers, I used parallel processing with the *doParallel* library thus enhancing computational efficiency.
+
+## IV. Results
+
+```{r results, eval = T}
+both_results <- nb_results |> 
+  left_join(final_results, by = 'Years')
+# replace dots (".") with blank spaces
+both_results <- both_results |>
+  mutate(across(where(is.character), ~ str_replace_all(., '\\.', ' ')))
+# apply conditional coloring cells to visually enhance the table of results 
+set_background <- function(x, color = "white", format = "latex") {
+    cell_spec(x, format = format, background = color)
+}
+
+table_of_results <- both_results |>
+    mutate(
+        across(`Naive Bayes`:`Random forest`, \(x)
+            case_when(x == 'Military rule' ~ set_background(x, "#ccd64f"),
+                      x == 'Parliamentarism' ~ set_background(x, "#11bbff"),
+                      x == 'Presidentialism' ~ set_background(x, "#99ddff"),
+               .default = set_background(x)
+            ))) |>
+    kbl(format = "latex", longtable = T, booktabs = TRUE, escape = FALSE, 
+    digits = 0, 
+    linesep = '', 
+    caption = "Classifiers predictions: Cuba's Governance forms (1959-2015)") |>
+  kable_styling(latex_options = c('hold_position', 'repeat_header'))
+```
+
+Table 4 below presents the outcomes generated by both algorithms. Notably, Naive Bayes yields unexpected results when considering the observed attributes of the Cuban political regime spanning from 1959 to 2015. If there is one certainty about this political regime, it is its non-democratic nature. Hence, classifications such as *Presidentialism* (1969 to 1971; 1973 to 1978; and 1982 to 1991) and, surprisingly, the most democratic political regime, *Parliamentarism* (between 1992 and 2015, inclusive), push the boundaries of the most logical interpretation. Moreover, it is worth noting the frequent switches of classifications (seven in total), indicate a certain degree of instability in the results. This instability is particularly puzzling given the unchanging nature of both the regime and its key political actors.
+
+The results obtained with the Random Forest classifier better align with the characteristics of the main actors and the perceived nature of the Cuban political regime. Specifically, this algorithm classifies the period between 1959 and 2007, corresponding to Fidel Castro's tenure, as a *Personalistic rule*, while categorizing the remaining years, corresponding to Raúl Castro's tenure, as a *Military rule*. Notably, the only change in classification occurs in 2008, coinciding with the transfer of power between Fidel and Raúl Castro. 
+
+```{r, eval = T}
+table_of_results 
+```
+
+### Performance of the Naive Bayes classifier:
+  
+As previously mentioned, the Naive Bayes classifier predicts unexpected outcomes when considering the observed attributes of the Cuban political regime from 1959 to 2015. Its overall accuracy is approximately 0.65 (see Table 5 below), with macro precision at `r round(macro_precision_nb, 2)`, macro recall at `r round(macro_recall_nb, 2)`, and macro F1 at `r round(macro_F1_nb, 2)`. ^[ All "macro" metrics are class-level averages based on the target variable. Refer to Annex III for concise explanations of these metrics.]
+  
+```{r precision_nb, eval = T}
+
+t(conf_matrix_nb$overall) |> 
+  as_tibble() |> 
+  select(1:6) |> 
+  kbl(caption = 'Naives Bayes: Accuracy and some related statistics', 
+      digits = 3, col.names = c('Accuracy', 'Kappa', 'Lower bound', 'Upper bound', 
+                                'Null', 'p-value')) |> 
+  kable_styling(latex_options = c('striped', 'hold_position', 
+                                  table.attr = "style='font-size: 10px'"))
+```
+
+The performance metrics in Table 5 above represent overall statistics referring to accuracy and its statistical significance. In particular, 
+
+- **Accuracy** measures the proportion of correctly classified instances out of the total instances. It indicates that only about 65 percent of the predictions made by the model were correct.
+
+- **Kappa** measures the agreement between the observed accuracy and the expected accuracy that can be obtained by random guessing. For instance, kappa = 0 indicates agreement equivalent to chance, while kappa = 1 indicates perfect agreement. Therefore, a kappa value of about 0.6 suggests a moderate level of agreement beyond what would be expected by chance alone.
+
+**Lower** and **Upper** bounds define the confidence interval for the accuracy metric at the 95 percent level.
+
+**Null** represents the accuracy of a naive classifier that always predicts the majority class. It indicates that the baseline accuracy for the dataset is around 21.8 percent.
+
+**p-value** tests the null hypothesis that the model’s accuracy is equal to the null accuracy. A very small p-value (close to zero) indicates that the model’s accuracy is significantly better than the baseline accuracy.
+
+Figure 2 below focuses on nine out of the eleven metrics provided by the confusion matrix output generated by caret. ^[Please refer to Annex  for the complete set of 11 metrics and to Annex III for explanations on some of these metrics.]
+
+```{r plot_conf_matrix_nb_classes, echo = F, eval = T}
+# plot Naive Bayes' confusion matrix by metric (conf_matrix_nb)
+# extract the metrics for each class and convert matrix into a data frame
+class_stats_df <- as.matrix(conf_matrix_nb_classes) |> 
+  as.data.frame()
+
+# add a column for the class names
+class_stats_df <- rownames_to_column(class_stats_df, 'Class')
+
+# "pivotlong" the data frame for plot
+class_stats_long <- class_stats_df |>
+  pivot_longer(-Class, names_to = 'Metric', values_to = 'Score')
+# plot
+plot_cm_nb <- class_stats_long |>
+  # plotting only the 9 most frequently-reported metrics
+  filter(Class != 'Sensitivity') |> 
+  filter(Class != 'Neg Pred Value') |> 
+  ggplot(aes(x = Metric, y = Score, group = Class)) +
+  geom_line(color = 'grey87', linewidth = .37) +
+  geom_point(size = .51) +
+  facet_wrap(~Class) +
+  labs(title = 'Figure 2: Naive Bayes - Confusion matrix by metric',
+       x = 'Class',
+       y = 'Score') +
+  theme(axis.text.x = element_text(
+    angle = 90,
+    hjust = 1), 
+    legend.position = 'none')
+
+plot_cm_nb
+```
+
+As seen in Figure 2, Specificity tends to be high across most target classes, indicating the model's ability to identify true negatives. However, Recall (also known as Sensitivity), Precision, and the F1 score exhibit more variation, indicating challenges in correctly identifying and accurately predicting certain classes. Balanced accuracy, on the other hand, generally remains high for most classes, suggesting that, despite some variability, the model performs reasonably well across different metrics. The variability in metrics suggests that while the model performs well at avoiding false positives (high Specificity), it sometimes faces challenges with Recall and Precision in specific classes, reflecting the inherent difficulties in multi-class classification tasks. Figure 2 also suggests that while the model performs well for some classes, such as Monarchic Oligarchy (with very high Balanced Accuracy, Sensitivity/Recall, and Specificity), it encounters difficulties with others, such as Personalist Rule and Single-Party Rule, where Sensitivity/Recall are relatively low.
+
+A close inspection of the confusion matrix for the Naive Bayes classifier (Refer to Annex IV) reveals that several classes are poorly predicted. For instance, 
+
+- *Military rule*: Despite a relatively high sensitivity (0.748), it has a low positive predictive value (0.540), indicating many false positives.
+- *Personalist rule*: Both sensitivity (0.571) and positive predictive value (0.565) are moderate, indicating balanced but not excellent performance.
+- *Single party rule*: Low sensitivity (0.481) and balanced accuracy (0.734) suggest difficulties in correct identification.
+
+These metrics, all representing non-democratic forms of governance, clearly highlight the weaknesses of the Naive Bayes classifier. This underscores the need for more robust methods to improve classification accuracy.
+
+### Performance of the Random Forest model
+
+The Random Forest classifier outperforms the Naive Bayes classifier in several key overall performance metrics. Specifically, the Random Forest classifier achieves an accuracy score of `r round(accuracy, 2)`, (95% CI (0.967, 0.988), and a Kappa score of 0.976. Furthermore, it also achieves a macro precision of `r round(macro_precision, 2)`, a macro recall of `r round(macro_recall, 2)`, and an macro F1 score of `r round(macro_f1, 2)`. These near-perfect metrics suggest that the Random Forest classifier accurately predicts the classes with minimal errors. Overall, the Random Forest model shows strong performance and high accuracy. Furthermore, this classifier performs well across most classes, demonstrating perfect or near-perfect metrics in several categories. The *Military rule* class, however, has slightly lower sensitivity and positive predictive value compared to others, indicating some room for improvement in this category.
+
+```{r precision_rf, eval = T}
+t(conf_matrix$overall) |> 
+  as_tibble() |> 
+  select(1:6) |> 
+  kbl(caption = 'Random Forest: Accuracy and some related statistics', 
+      digits = 3, col.names = c('Accuracy', 'Kappa', 'Lower bound', 'Upper bound', 
+                                'Null', 'p-value')) |> 
+  kable_styling(latex_options = c('striped', 'hold_position', 'scale_down'))
+```
+
+The superior performance of the Random Forest classifier, even with a limited number of predictors, underscores its robustness. However, a more sensible set of predictors could potentially enhance the performance and reliability of this model. 
+
+```{r plot_conf_matrix_rf_classes, eval = T}
+# plot Random Forest' confusion matrix by metric (conf_matrix)
+# extract the metrics for each class and convert matrix into a data frame
+class_stats_rf_df <- as.matrix(conf_matrix_classes) |> 
+  as.data.frame()
+
+# add a column for the class names
+class_stats_rf_df <- rownames_to_column(class_stats_rf_df, 'Class')
+
+# "pivotlong" the data frame for plot
+class_stats_rf_long <- class_stats_rf_df |>
+  pivot_longer(-Class, names_to = 'Metric', values_to = 'Score')
+# plot
+plot_cm_rf <- class_stats_rf_long |>
+  # plotting only the 9 most frequently-reported metrics
+  filter(Class != 'Sensitivity') |> 
+  filter(Class != 'Neg Pred Value') |> 
+  ggplot(aes(x = Metric, y = Score, group = Class)) +
+  geom_line(color = 'grey87', linewidth = .37) +
+  geom_point(size = .51) +
+  facet_wrap(~Class) +
+  labs(title = 'Figure 3: Random Forest - Confusion matrix by metric',
+       x = 'Class',
+       y = 'Score') +
+  theme(axis.text.x = element_text(
+    angle = 90,
+    hjust = 1), 
+    legend.position = 'none')
+
+plot_cm_rf
+```
+
+The confusion matrix for the Random Forest classifier (Figure 3 and Annex IV) shows consistently high scores across various metrics for most classes. The metrics of interest are Balanced accuracy, F1 score, Positive predictive value, Precision, Recall, and Specificity.
+
+The high scores for these metrics across multiple classes suggest that the model is performing well in terms of both Recall (Sensitivity) and Specificity, indicating its ability to correctly identify both positive and negative cases. The Positive predictive value and precision scores indicate the model's capability to accurately predict positive cases, while the recall score highlights its ability to capture true positives from the actual positive cases.
+
+When interpreting these high scores, it's crucial to acknowledge the potential for overfitting. ^[Recent insights, such as those discussed in Molas (2022) blog post, suggest that Random Forests can indeed overfit, deviating from their generalization capabilities]. Overfitting transpires when the model memorizes the training data instead of extrapolating from it, leading to overly optimistic performance metrics.
+
+However, a more plausible explanation is that the majority of the variability in the specified Random Forest model may be arising from the bootstrapping process. This is evident as the tuned *mtry* parameter closely approximates the total number of optimal features. Further refinement could potentially result in a broader array of features available for selection by the bagging mechanism.
+
+## V. Conclusion
+
+Classifying the political regime that has governed Cuba over the past sixty-five years is inherently challenging. In this project, I tackle the issue of the classification of governance forms prevailing in Cuba from 1959 to 2015, treating it as a multi-class classification problem. After combining data from four different sources, I initially train a Naive Bayes classifier, followed by a Random Forest model. Evaluation of common metrics reveals that the Random Forest outperforming the Naive Bayes model. Notably, while the Naive Bayes model produces improbable results given the non-democratic nature of the Cuban political regime, the Random Forest classifier yields more plausible outcomes. Specifically, the Random Forest indicates a transition from personalist rule (1959-2007) to military rule (2008-2015) during the tenures of Fidel and Raúl Castro, respectively. However, this finding starkly contrasts with Anckar and Fredriksson's (2020) classification of the entire period as single-party rule. 
+
+**VI. Limitations and further analysis**
+
+An important limitation of this project arises from the challenges associated with measuring the target variable, which is inherently unobservable and thus susceptible to subjectivity. 
+
+Admittedly, however, the primary constraints of this project stem from my limited expertise in both political science and data science.
+
+Further analysis on classifying the Cuban political regime may involve exploring several avenues:
+
+**Expanding the dataset**: Broadening the dataset to encompass a wider array of variables from diverse sources could provide a more comprehensive understanding of the Cuban political regime. This could involve considering additional predictors such as the leader's affiliation and their last held political position, which were not included in this project.^[These predictors were not considered in this project due to exceeding the allowable limit of classes that a feature in caret, 53. Exploring techniques to reduce the number of classes, such as one-hot encoding or using forcats::fct_lump(), was not feasible within the time constraints of this study.]
+
+**Expanding the time coverage**: Extending the time coverage of the analysis to include data for more recent years could offer additional insights into the evolution of the Cuban political regime.
+
+**Utilizing ensemble methods**: Exploring ensemble methods, like stacking, can enhance both robustness and accuracy by combining multiple models' predictions.
+
+**Integrating a more systematic approach**: Incorporating a systematic theoretical framework by referencing relevant literature from both data science and political science fields could enhance the analysis's rigor and depth and informing modeling decisions.
+
+## Annex I - Function to fill missing years in the Archigos and CHISOLS datasets
+
+The function *"fill_missing_years"* fills in the intermediate, non-existent years in datasets like Archigos, which only include records (rows) for the year when a leader enters (inaugurates term). In contrast, datasets such as Anckar and Fredriksson (2020) and UN include records for all years within their covered periods. 
+
+To illustrate, let's assume we want to join the Archigos and UN datasets. Without any adjustments, this would mean losing all the information for the years present in the UN dataset but missing in Archigos. For example, consider Nixon and Carter, the American presidents that assumed office in 1969 and 1977, respectively. Joining the Archigos and Anckar and Fredriksson (2020) datasets as they are would only preserve information for the years 1969 and 1977 (See Table 5 below).
+
+```{r, eval = T}
+archigos_chisols |> 
+  filter(country_abb == 'USA' & (leader == 'Nixon' | leader == 'Carter')) |> 
+  select(2:6) |> 
+  kbl(caption = 'Joining datasets without any adjustements') |> 
+  kable_styling(latex_options = c('striped', 'hold_position')) 
+```
+
+The function *"fill_missing_years"* addresses this issue by replicating the data from 1969 across the intermediate years (1970 to 1976) and adding these years to the dataset. This ensures that no data from the other two datasets are lost during the merge (See Table 6 below).
+
+```{r, eval = T}
+archigos_chisols_filled |> 
+  filter(country_abb == 'USA' & (leader == 'Nixon' | leader == 'Carter')) |>
+  select(2, 4:7) |> 
+  head() |> 
+  kbl(caption = "Joining datasets using the function \n\\textit{fill\\_missing\\_years}") 
+```
+
+```{r near_zero, eval = T}
+# get near-zero variances using function from caret
+nzv <- nearZeroVar(df_1950_2015, saveMetrics = T)
+```
+
+However, an important concern with this approach is the potential introduction of near-zero variance in some predictors when estimating probabilities with the Naive Bayes algorithm. ^[In Naive Bayes, near-zero variance can lead to probabilities that are extremely close to 0 or 1, resulting in numerical instability.], although this may not be an issue for tree-based methods like random forests. This function effectively duplicates the information for the predictors over the years. However, the only feature exhibiting near-zero variance is gender, and it was consequently removed.
+
+```{r, eval = T}
+# table of near-zero variances
+nzv[nzv$nzv, ] |> 
+  kbl(caption = 'Near-zero variance in one feature: gender', digits = 2) |> 
+  kable_styling(latex_options = c('striped', 'hold_position'))
+```
+
+\blandscape
+
+## Annex II - Predictors in the initial dataset
+
+```{r table_predictors, eval = T}
+# table of predictors
+
+kbl(table_predictors, col.names = c('Predictor', 'Class', 'Brief description', 'Source'), 
+    caption = 'Selected predictors', longtable = T) |> 
+  kable_styling(latex_options = c('striped', 'repeat_header'))
+```
+
+\elandscape
+
+## Annex III - Common perfomance metrics overview 
+
+**Accuracy**
+Accuracy measures the overall correctness of the model's predictions, taking into account both true positive (TP) and true negative (TN) predictions, and is calculated as:
+
+$$ \text{Accuracy} = \frac{\text{TP + TN}}{\text{TP + TN + FP + FN}} $$
+
+**Precision**
+Precision measures the proportion of correctly predicted positive instances (TP) among all instances predicted as positive (TP + FP). It focuses on the accuracy of positive predictions, and the formula is:
+
+$$ \text{Precision} = \frac{\text{TP}}{\text{TP + FP}} $$
+**Recall (Sensitivity)**
+Recall measures the proportion of correctly predicted positive instances (TP) among all actual positive instances (TP + FN). It focuses on the ability of the model to capture all positive instances, and the formula is:
+
+$$ \text{Recall} = \frac{\text{TP}}{\text{TP + FN}} $$
+ **F1-Score**
+The F1-Score is the harmonic mean of precision and recall, providing a balance between these two metrics, and is calculated as:
+
+$$ \text{F1-Score} = 2 \times \frac{\text{Precision} \times \text{Recall}}{\text{Precision + Recall}} $$
+
+## Annex IV - Confusion matrices
+
+### Confusion matrix for the Naive Bayes classifier
+```{r, eval = T}
+# confusion matrix for the NB classifier
+conf_matrix_nb
+```
+
+### Confusion matrix for the Random Forest classifier
+```{r, eval = T}
+# confusion matrix for the RF classifier
+conf_matrix
+```
+
+## References
+
+Abrahams and Arturo López-Levy (2011). *Raúl Castro and the New Cuba*. Mcfarland and Company Inc.
+
+Anckar, Carsten and Cecilia Fredriksson (2019). *Classifying political regimes 1800–2016: a typology and a new dataset*. European Political Science, Vol. 18, pp. 84-96.
+
+Anckar, Carsten and Cecilia Fredriksson (2020). *Political Regimes of the World* and  Dataset, v. 2.0.
+
+Breiman, Leo (2001). *Random Forests.* Machine Learning, 45, pp. 5–32.
+
+Castro, Fidel (2008). *Proclamation of Cuban transfer of duties 2006.* https://en.wikisource.org/wiki/Proclamation_of_Cuban_transfer_of_duties_2006
+
+Dalrymple, Theodore (2012) *The Wilder Shores of Marx: Journeys in a Vanishing World.* Monday Books. Hutchinson.
+
+Goemans, Henk E., Kristian Skrede Gleditsch, Giacomo Chiozza (2009). *Introducing Archigos: A Data Set of Political Leaders*. Journal of Peace Research, Vol. 46, No. 2, March, pp. 
+
+Hoffmann, Bert (2011). *The International Dimensions of Authoritarian Legitimation.* German Institute for Global and Area Studies. Working Papers, No. 182
+
+James, Gareth, Daniela Witten, Trevor Hastie, Robert Tibshirani and Jonathan Taylor (2023). *An Introduction to Statistical Learning with Applications in Python*. Springe Texts in Statistics.
+
+Kuhn, Max and Kjell Johnson (2013). *Applied Predictive Modeling*. Springer, New York, Heidelberg, Dordrecht, London.
+
+López-Levy, Arturo (2016). *"Cuba After Fidel: Economic Reform, Political Liberalization and Foreign Policy (2006–2014).* Univefsity of Denver. Electronic Theses and Dissertations. 1212.
+
+Mattes, Michaela, Brett Ashley Leeds, and Naoko Matsumura (2016). *Measuring Change in Source of Leader Support: The CHISOLS Dataset.* Journal of Peace Research 53(2): 259-267.
+
+Müllerson, Rein (2023). *E Pluribus Unum – A Dangerous Concept for the World since Not Always Those Who Are Not Like Us Are Against Us* European Law Open, Vol. 2, pp. 857 - 879.
+
+Pérez Firmat, Gustavo (2010). *The Havana Habit.* Yale University Press. New Haven and London. 
+
+United Nations (2022). *World Population Prospects*. UN Department of Economic and Social Affairs, Population Division. Online Edition (https://population.un.org/wpp/Download/Standard/CSV/)
+
+```{r, eval = F}
+pander(sessionInfo()) 
+```
